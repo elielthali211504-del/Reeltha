@@ -19,8 +19,8 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # Obtener variables de entorno o usar valores por defecto
 API_ID = int(os.environ.get("API_ID", "25512912"))
 API_HASH = os.environ.get("API_HASH", "cfe0fcd0f5b048c1586fb6485a9e9750")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8466861038:AAEfSwEfmRtrmK7HG8_YuOYnKC-uOjgroyw")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "6438282268"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8366851407:AAFNXALvUNrltelLG41qriJKrzGCnThbevM")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7363341763"))
 
 # =========================
 # CONFIGURACIÓN DE REVISTAS
