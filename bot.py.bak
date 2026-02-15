@@ -1,0 +1,1920 @@
+import os
+import re
+import json
+import time
+import shutil
+import requests
+import asyncio
+import zipfile
+import signal
+import psutil
+from datetime import datetime
+from bs4 import BeautifulSoup
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# =========================
+# CONFIGURACIÓN DEL BOT (con variables de entorno para Render)
+# =========================
+# Obtener variables de entorno o usar valores por defecto
+API_ID = int(os.environ.get("API_ID", "25512912"))
+API_HASH = os.environ.get("API_HASH", "cfe0fcd0f5b048c1586fb6485a9e9750")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8466861038:AAEfSwEfmRtrmK7HG8_YuOYnKC-uOjgroyw")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "6438282268"))
+
+# =========================
+# CONFIGURACIÓN DE REVISTAS
+# =========================
+REVISTAS = {
+    "KIKI_REV": {
+        "username": "daironvf",
+        "password": "Dairon2005",
+        "submission_id": "3493",
+        "base_url": "https://revcardiologia.sld.cu",
+        "contexto": "revcardiologia",
+        "nombre": "Revista Cardiología"
+    },
+    "COMED_REV": {
+        "username": "daironvf",
+        "password": "Dairon2005#",
+        "submission_id": "5529",
+        "base_url": "https://revcocmed.sld.cu",
+        "contexto": "cocmed",
+        "nombre": "Revista COMED"
+    },
+    "EMS_REV": {
+        "username": "daironvf",
+        "password": "Dairon2005#",
+        "submission_id": "5033",
+        "base_url": "https://ems.sld.cu",
+        "contexto": "ems",
+        "nombre": "Revista EMS"
+    }
+}
+
+ROOT_DIR = "raiz"
+os.makedirs(ROOT_DIR, exist_ok=True)
+
+CHUNK_SIZE_MB = 5
+START_TIME = time.time()  # Para calcular tiempo de actividad
+
+# =========================
+# SISTEMA DE USUARIOS AUTORIZADOS
+# =========================
+AUTHORIZED_USERS_FILE = "authorized_users.json"
+REVISTAS_CONFIG_FILE = "revistas_config.json"
+
+def load_revistas_config():
+    """Carga la configuración de revistas desde archivo JSON"""
+    try:
+        if os.path.exists(REVISTAS_CONFIG_FILE):
+            with open(REVISTAS_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        else:
+            save_revistas_config(REVISTAS)
+            return REVISTAS
+    except Exception as e:
+        print(f"❌ Error al cargar configuración de revistas: {e}")
+        return REVISTAS
+
+def save_revistas_config(config):
+    """Guarda la configuración de revistas en archivo JSON"""
+    try:
+        with open(REVISTAS_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"❌ Error al guardar configuración de revistas: {e}")
+        return False
+
+# Cargar configuración de revistas
+REVISTAS = load_revistas_config()
+
+def load_authorized_users():
+    """Carga la lista de usuarios autorizados desde el archivo JSON"""
+    if os.path.exists(AUTHORIZED_USERS_FILE):
+        try:
+            with open(AUTHORIZED_USERS_FILE, 'r', encoding='utf-8') as f:
+                users = json.load(f)
+                for user in users:
+                    if 'id' in user:
+                        user['id'] = int(user['id'])
+                return users
+        except Exception as e:
+            print(f"❌ Error al cargar usuarios: {e}")
+            return []
+    return []
+
+def save_authorized_users(users_list):
+    """Guarda la lista de usuarios autorizados en el archivo JSON"""
+    try:
+        with open(AUTHORIZED_USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(users_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"❌ Error al guardar usuarios: {e}")
+        return False
+
+def add_authorized_user(user_id, username=None):
+    """Agrega un usuario a la lista de autorizados"""
+    try:
+        users = load_authorized_users()
+        user_id = int(user_id)
+        
+        for user in users:
+            if user.get('id') == user_id:
+                print(f"⚠️ Usuario {user_id} ya existe")
+                return False
+        
+        new_user = {
+            'id': user_id,
+            'username': username,
+            'added_date': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        users.append(new_user)
+        
+        if save_authorized_users(users):
+            print(f"✅ Usuario {user_id} agregado")
+            return True
+        else:
+            print(f"❌ Error al guardar usuario {user_id}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error en add_authorized_user: {e}")
+        return False
+
+def remove_authorized_user(user_id):
+    """Elimina un usuario de la lista de autorizados"""
+    try:
+        users = load_authorized_users()
+        user_id = int(user_id)
+        
+        original_count = len(users)
+        users = [user for user in users if user.get('id') != user_id]
+        
+        if len(users) < original_count:
+            if save_authorized_users(users):
+                print(f"✅ Usuario {user_id} eliminado")
+                return True
+            else:
+                print(f"❌ Error al guardar después de eliminar")
+                return False
+        else:
+            print(f"⚠️ Usuario {user_id} no encontrado")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error en remove_authorized_user: {e}")
+        return False
+
+def is_user_authorized(user_id):
+    """Verifica si un usuario está autorizado"""
+    try:
+        user_id = int(user_id)
+        
+        # El administrador SIEMPRE está autorizado
+        if user_id == ADMIN_ID:
+            return True
+        
+        # Cargar usuarios autorizados
+        users = load_authorized_users()
+        
+        # Buscar usuario en la lista
+        for user in users:
+            if int(user.get('id', 0)) == user_id:
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"❌ Error en is_user_authorized: {e}")
+        return False
+
+# Inicializar lista de usuarios autorizados
+if not os.path.exists(AUTHORIZED_USERS_FILE):
+    save_authorized_users([])
+    print(f"📄 Archivo {AUTHORIZED_USERS_FILE} creado")
+
+# =========================
+# DECORADOR PARA VERIFICAR USUARIOS AUTORIZADOS
+# =========================
+def authorized_only(func):
+    """Decorador para verificar si el usuario está autorizado"""
+    async def wrapper(client, message):
+        try:
+            user_id = message.from_user.id if message.from_user else None
+            
+            if not user_id:
+                await message.reply("❌ No se pudo identificar al usuario.")
+                return
+            
+            if not is_user_authorized(user_id):
+                await message.reply(
+                    "❌ **Acceso denegado**\n\n"
+                    "No estás autorizado para usar este bot.\n"
+                    "Contacta al administrador para solicitar acceso.\n\n"
+                    f"👨‍💻 Desarrollador: @Emanuel14APK"
+                )
+                return
+            
+            return await func(client, message)
+            
+        except Exception as e:
+            await message.reply(f"❌ Error de autorización: {str(e)}")
+    
+    return wrapper
+
+# =========================
+# CLASE UPLOADER REVISTA
+# =========================
+class RevistaUploader:
+    def __init__(self, username, password, submission_id, base_url, contexto):
+        self.base_url = base_url
+        self.contexto = contexto
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        })
+        self.csrf_token = None
+        self.submission_id = str(submission_id).strip()
+        self.chunk_size = CHUNK_SIZE_MB * 1024 * 1024
+        self.username = username
+        self.password = password
+
+    def login(self):
+        try:
+            login_url = f"{self.base_url}/index.php/{self.contexto}/login"
+            resp = self.session.get(login_url, timeout=15)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            csrf_input = soup.find('input', {'name': 'csrfToken'})
+            if csrf_input:
+                self.csrf_token = csrf_input.get('value', '')
+            if not self.csrf_token:
+                for script in soup.find_all('script'):
+                    if script.string and 'csrfToken' in script.string:
+                        m = re.search(r'csrfToken[\'"]?\s*:\s*[\'"]([^\'"]+)[\'"]', script.string)
+                        if m:
+                            self.csrf_token = m.group(1)
+                            break
+            if not self.csrf_token:
+                return False
+
+            data = {
+                'csrfToken': self.csrf_token,
+                'username': self.username,
+                'password': self.password,
+                'remember': '1',
+                'source': '',
+            }
+            post_url = f"{self.base_url}/index.php/{self.contexto}/login/signIn"
+            resp = self.session.post(post_url, data=data, timeout=15)
+            return 'Cerrar sesión' in resp.text or 'submissionId=' in resp.text
+        except Exception as e:
+            print(f"❌ Error en login: {e}")
+            return False
+
+    def navigate_to_step_2(self):
+        if not self.submission_id:
+            return False
+        step2_url = f"{self.base_url}/index.php/{self.contexto}/submission/wizard/2?submissionId={self.submission_id}#step-2"
+        resp = self.session.get(step2_url)
+        if "step-2" not in resp.url:
+            return False
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        csrf_input = soup.find('input', {'name': 'csrfToken'})
+        if csrf_input:
+            self.csrf_token = csrf_input.get('value', '')
+        return True
+
+    def _content_type(self, filename):
+        name = filename.lower()
+        if name.endswith('.pdf'):   return 'application/pdf'
+        if name.endswith('.zip'):   return 'application/zip'
+        if name.endswith('.doc'):   return 'application/msword'
+        if name.endswith('.docx'):  return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        if name.endswith('.jpg') or name.endswith('.jpeg'): return 'image/jpeg'
+        if name.endswith('.png'):   return 'image/png'
+        if name.endswith('.mp4'):   return 'video/mp4'
+        if name.endswith('.mp3'):   return 'audio/mpeg'
+        return 'application/octet-stream'
+
+    def upload_file_to_submission(self, file_path, original_name=None):
+        if not os.path.exists(file_path) or not self.submission_id:
+            return None
+        if not self.navigate_to_step_2():
+            return None
+
+        file_name = original_name if original_name else os.path.basename(file_path)
+        api_url = f"{self.base_url}/index.php/{self.contexto}/api/v1/submissions/{self.submission_id}/files"
+        content_type = self._content_type(file_name)
+
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+
+        headers = {
+            'X-Csrf-Token': self.csrf_token,
+            'Referer': f"{self.base_url}/index.php/{self.contexto}/submission/wizard/2?submissionId={self.submission_id}",
+        }
+        files = {'file': (file_name, file_content, content_type)}
+        data = {'name[es_ES]': file_name, 'fileStage': '2', 'csrfToken': self.csrf_token}
+
+        resp = self.session.post(api_url, files=files, data=data, headers=headers)
+        if resp.status_code == 200:
+            try:
+                result = resp.json()
+                if result.get('id'):
+                    file_id = result.get("id")
+                    download_url = f"{self.base_url}/index.php/{self.contexto}/$$$call$$$/api/file/file-api/download-file?submissionFileId={file_id}&submissionId={self.submission_id}&stageId=1"
+                    view_url = f"{self.base_url}/index.php/{self.contexto}/submission/{self.submission_id}/file/{file_id}"
+                    return {
+                        "id": file_id,
+                        "name": result.get("name", {}).get("es_ES", file_name) if isinstance(result.get("name"), dict) else result.get("name", file_name),
+                        "url": download_url,
+                        "direct_url": view_url,
+                        "size": os.path.getsize(file_path)
+                    }
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    def get_submission_files(self):
+        """Obtiene la lista de archivos subidos al envío"""
+        if not self.submission_id or not self.csrf_token:
+            return []
+        
+        files_url = f"{self.base_url}/index.php/{self.contexto}/api/v1/submissions/{self.submission_id}/files"
+        
+        headers = {
+            'X-Csrf-Token': self.csrf_token,
+            'Referer': f"{self.base_url}/index.php/{self.contexto}/submission/wizard/2?submissionId={self.submission_id}",
+            'Accept': 'application/json'
+        }
+        
+        try:
+            resp = self.session.get(files_url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict) and 'items' in data:
+                    return data['items']
+                elif isinstance(data, list):
+                    return data
+        except Exception as e:
+            print(f"❌ Error al obtener archivos: {e}")
+        
+        return []
+
+    def delete_file(self, file_id):
+        """Elimina un archivo del envío"""
+        if not self.submission_id or not self.csrf_token:
+            return False
+        
+        try:
+            delete_url = f"{self.base_url}/index.php/{self.contexto}/api/v1/submissions/{self.submission_id}/files/{file_id}"
+            
+            headers = {
+                'X-Csrf-Token': self.csrf_token,
+                'Referer': f"{self.base_url}/index.php/{self.contexto}/submission/wizard/2?submissionId={self.submission_id}",
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            }
+            
+            resp = self.session.delete(delete_url, headers=headers, timeout=15)
+            return resp.status_code in [200, 204]
+            
+        except Exception as e:
+            print(f"❌ Error al eliminar archivo {file_id}: {e}")
+            return False
+
+# =========================
+# FUNCIONES AUXILIARES
+# =========================
+def fake_pdf(input_path):
+    """Renombra un archivo agregando extensión .pdf"""
+    try:
+        if not os.path.exists(input_path):
+            return None
+            
+        if input_path.lower().endswith('.pdf'):
+            return input_path
+            
+        fake_path = input_path + ".pdf"
+        shutil.copy2(input_path, fake_path)
+        print(f"✅ Archivo renombrado a PDF: {os.path.basename(fake_path)}")
+        return fake_path
+    except Exception as e:
+        print(f"❌ Error al renombrar archivo a PDF: {e}")
+        return None
+
+def prepare_chunked_parts(original_path, chunk_size_bytes, work_dir):
+    """Divide un archivo grande en partes y las prepara para subir"""
+    parts_info = []
+    
+    try:
+        if not os.path.exists(original_path):
+            print(f"❌ Archivo no encontrado: {original_path}")
+            return parts_info
+            
+        fname = os.path.basename(original_path)
+        total_size = os.path.getsize(original_path)
+        
+        os.makedirs(work_dir, exist_ok=True)
+        
+        print(f"📦 Preparando partes para: {fname}")
+        print(f"📊 Tamaño total: {total_size / 1024 / 1024:.2f} MB")
+        print(f"📏 Tamaño por parte: {chunk_size_bytes / 1024 / 1024:.2f} MB")
+        
+        with open(original_path, "rb") as src:
+            part_idx = 1
+            offset = 0
+            
+            while offset < total_size:
+                chunk_data = src.read(chunk_size_bytes)
+                if not chunk_data:
+                    break
+                
+                zip_name = f"{fname}.part{part_idx}.zip"
+                zip_path = os.path.join(work_dir, zip_name)
+                
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+                    zf.writestr(f"{fname}.part{part_idx}", chunk_data)
+                
+                pdf_name = f"{zip_name}.pdf"
+                pdf_path = os.path.join(work_dir, pdf_name)
+                shutil.copy(zip_path, pdf_path)
+                
+                part_size = os.path.getsize(pdf_path)
+                parts_info.append({
+                    "part_idx": part_idx,
+                    "pdf_path": pdf_path,
+                    "size": part_size,
+                    "name": pdf_name,
+                    "zip_path": zip_path
+                })
+                
+                print(f"  ✅ Parte {part_idx} creada: {pdf_name} ({part_size / 1024 / 1024:.2f} MB)")
+                
+                part_idx += 1
+                offset += len(chunk_data)
+        
+        print(f"📋 Total partes creadas: {len(parts_info)}")
+        return parts_info
+        
+    except Exception as e:
+        print(f"❌ Error en prepare_chunked_parts: {e}")
+        return parts_info
+
+def get_file_list():
+    """Obtiene lista de TODOS los archivos en la raíz"""
+    all_files = []
+    try:
+        for root, dirs, files in os.walk(ROOT_DIR):
+            for f in files:
+                all_files.append(os.path.join(root, f))
+        all_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        return all_files
+    except Exception as e:
+        print(f"❌ Error en get_file_list: {e}")
+        return []
+
+def get_total_size():
+    """Calcula el tamaño total de todos los archivos"""
+    total = 0
+    try:
+        for root, dirs, files in os.walk(ROOT_DIR):
+            for f in files:
+                fp = os.path.join(root, f)
+                total += os.path.getsize(fp)
+    except:
+        pass
+    return total
+
+def format_file_size(size_bytes):
+    """Formatea el tamaño del archivo en unidades legibles"""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+def get_uptime():
+    """Obtiene el tiempo de actividad del bot"""
+    uptime_seconds = int(time.time() - START_TIME)
+    days = uptime_seconds // (24 * 3600)
+    hours = (uptime_seconds % (24 * 3600)) // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    seconds = uptime_seconds % 60
+    
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m {seconds}s"
+    elif hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+# =========================
+# INICIALIZAR BOT
+# =========================
+app = Client("revista_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# Variables globales
+active_uploads = {}
+user_selected_files = {}
+user_config_states = {}
+
+# --- Barra de progreso ---
+async def progress_bar_generic(current, total, status_msg, file_name, action="Descargando", part=None, total_parts=None, total_size=None, part_size=None):
+    try:
+        percent = current * 100 / total if total > 0 else 0
+        bar_length = 25
+        filled = int(bar_length * percent / 100)
+        bar = "█" * filled + "─" * (bar_length - filled)
+        
+        if hasattr(status_msg, 'date') and status_msg.date:
+            speed = (current / 1024 / 1024) / (time.time() - status_msg.date.timestamp() + 0.001)
+        else:
+            speed = 0
+
+        extra = ""
+        if part and total_parts and total_size and part_size:
+            extra = (f"\n📊 Parte {part}/{total_parts} ({part_size/1024/1024:.2f} MB)"
+                     f"\n📦 Total: {total_size/1024/1024:.2f} MB en {total_parts} partes")
+
+        await status_msg.edit_text(
+            f"{'⬇️' if action=='Descargando' else '⬆️'} {action}: {file_name}\n"
+            f"[{bar}] {percent:.2f}%\n"
+            f"{current/1024/1024:.2f} MB / {total/1024/1024:.2f} MB{extra}\n"
+            f"⚡ Velocidad: {speed:.2f} MB/s\n\n"
+            f"👨‍💻 Desarrollador: @Emanuel14APK"
+        )
+    except Exception as e:
+        print(f"❌ Error en barra de progreso: {e}")
+
+# =========================
+# MANEJADOR DE SEÑALES PARA RENDER
+# =========================
+def handle_signal(signum, frame):
+    print(f"\n⚠️ Señal {signum} recibida. Cerrando el bot...")
+    exit(0)
+
+# Configurar manejadores de señales
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
+
+# =========================
+# COMANDOS DEL BOT
+# =========================
+
+@app.on_message(filters.command("start"))
+async def start_handler(client, message):
+    try:
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        
+        user_authorized = is_user_authorized(user_id)
+        
+        if user_authorized:
+            revistas_text = "\n".join([f"• {key}: {data['nombre']}" for key, data in REVISTAS.items()])
+            
+            await message.reply(
+                f"👋 **Hola, {user_name}!**\n\n"
+                f"✅ **Estás autorizado para usar este bot.**\n\n"
+                f"📚 **Revistas configuradas:**\n{revistas_text}\n\n"
+                f"📂 **Directorio raíz:** `{ROOT_DIR}`\n"
+                f"📦 **Tamaño de partes:** `{CHUNK_SIZE_MB} MB`\n\n"
+                f"**Comandos disponibles:**\n"
+                f"• /help - Muestra todos los comandos\n"
+                f"• /ls - Ver archivos guardados\n"
+                f"• /rm <número> - Borrar un archivo\n"
+                f"• /deleteall - Borrar todo\n"
+                f"• /up - Subir archivos a una revista\n"
+                f"• /up <número> - Subir archivo específico\n"
+                f"• /zips <tamaño> - Cambiar tamaño de partes\n"
+                f"• /clear_rev - Limpiar archivos de revista\n"
+                f"• /settings - Panel de configuración (Admin)\n\n"
+                f"👨‍💻 **Desarrollador:** @Emanuel14APK\n"
+                f"🆔 **Tu ID:** `{user_id}`"
+            )
+        else:
+            await message.reply(
+                f"👋 **Hola, {user_name}!**\n\n"
+                f"❌ **No estás autorizado para usar este bot.**\n\n"
+                f"**Para solicitar acceso:**\n"
+                f"1. Contacta al administrador\n"
+                f"2. Proporciona tu ID de usuario\n\n"
+                f"👨‍💻 **Desarrollador:** @Emanuel14APK\n"
+                f"🆔 **Tu ID:** `{user_id}`"
+            )
+            
+    except Exception as e:
+        await message.reply(f"❌ Error en /start: {str(e)}")
+
+@app.on_message(filters.command("help"))
+async def help_handler(client, message):
+    try:
+        help_text = f"""
+📚 **BOT DE GESTIÓN DE REVISTAS** - Ayuda
+
+**COMANDOS DISPONIBLES:**
+
+👑 **Administrador:**
+• /add <id/@user> - Agregar usuario autorizado
+• /ban <id> - Eliminar usuario autorizado
+• /users - Listar usuarios autorizados
+• /settings - Panel de configuración
+
+👤 **Usuarios autorizados:**
+• /start - Iniciar el bot
+• /help - Mostrar esta ayuda
+• /ls - Listar archivos guardados
+• /rm <número> - Eliminar archivo específico
+• /deleteall - Eliminar todos los archivos
+
+📤 **Subida a revistas:**
+• /up - Subir archivos (modo interactivo)
+• /up <número> - Subir archivo específico
+• /up <1,2,3> - Subir múltiples archivos
+• /up <1-3> - Subir rango de archivos
+• /up_<número> - Subir archivo específico (nuevo formato)
+• /zips <MB> - Cambiar tamaño de partes (1-100 MB)
+• /clear_rev - Limpiar archivos de revista
+
+📚 **Revistas disponibles:**
+"""
+        
+        for key, data in REVISTAS.items():
+            help_text += f"• {key}: {data['nombre']}\n"
+        
+        help_text += f"""
+        
+⚙️ **Configuración actual:**
+• Tamaño de partes: {CHUNK_SIZE_MB} MB
+• Directorio raíz: {ROOT_DIR}
+• Usuarios autorizados: {len(load_authorized_users())}
+
+📝 **Ejemplos de uso:**
+1. Envía archivos al bot
+2. Usa /ls para ver la lista
+3. Usa /up_1 para subir el primer archivo
+4. Selecciona la revista destino
+
+👨‍💻 **Desarrollador:** @Emanuel14APK
+"""
+        
+        await message.reply(help_text)
+    except Exception as e:
+        await message.reply(f"❌ Error en /help: {str(e)}")
+
+@app.on_message(filters.command("add"))
+async def add_user_handler(client, message):
+    try:
+        user_id = message.from_user.id
+        
+        if user_id != ADMIN_ID:
+            await message.reply("❌ Solo el administrador puede usar este comando.")
+            return
+        
+        if len(message.command) < 2:
+            await message.reply(
+                "**Uso:** /add <user_id> o /add @username\n\n"
+                "**Ejemplos:**\n"
+                "• /add 123456789\n"
+                "• /add @usuario\n\n"
+                "También puedes responder a un mensaje con /add para agregar ese usuario."
+            )
+            return
+        
+        target_user = None
+        
+        if message.reply_to_message:
+            target_user = message.reply_to_message.from_user
+        
+        elif message.command[1].isdigit():
+            try:
+                target_user_id = int(message.command[1])
+                try:
+                    target_user = await client.get_users(target_user_id)
+                except:
+                    target_user = type('obj', (object,), {'id': target_user_id, 'username': None})()
+            except ValueError:
+                await message.reply("❌ User ID inválido.")
+                return
+        
+        elif message.command[1].startswith('@'):
+            username = message.command[1][1:]
+            try:
+                target_user = await client.get_users(username)
+            except:
+                await message.reply(f"❌ No se pudo encontrar el usuario @{username}")
+                return
+        
+        else:
+            await message.reply("❌ Formato inválido. Usa: /add <user_id> o /add @username")
+            return
+        
+        if target_user:
+            if add_authorized_user(target_user.id, target_user.username):
+                await message.reply(
+                    f"✅ **Usuario agregado exitosamente**\n\n"
+                    f"👤 **ID:** `{target_user.id}`\n"
+                    f"📛 **Usuario:** @{target_user.username if target_user.username else 'N/A'}\n"
+                    f"📅 **Fecha:** {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            else:
+                await message.reply(f"❌ El usuario `{target_user.id}` ya está en la lista de autorizados.")
+                
+    except Exception as e:
+        await message.reply(f"❌ Error en /add: {str(e)}")
+
+@app.on_message(filters.command("ban"))
+async def ban_user_handler(client, message):
+    try:
+        user_id = message.from_user.id
+        
+        if user_id != ADMIN_ID:
+            await message.reply("❌ Solo el administrador puede usar este comando.")
+            return
+        
+        if len(message.command) < 2:
+            await message.reply(
+                "**Uso:** /ban <user_id>\n\n"
+                "**Ejemplo:** /ban 123456789\n\n"
+                "También puedes responder a un mensaje con /ban para eliminar ese usuario."
+            )
+            return
+        
+        target_user_id = None
+        
+        if message.reply_to_message:
+            target_user_id = message.reply_to_message.from_user.id
+        
+        elif message.command[1].isdigit():
+            try:
+                target_user_id = int(message.command[1])
+            except ValueError:
+                await message.reply("❌ User ID inválido.")
+                return
+        
+        else:
+            await message.reply("❌ Formato inválido. Usa: /ban <user_id>")
+            return
+        
+        if target_user_id:
+            if remove_authorized_user(target_user_id):
+                await message.reply(f"✅ Usuario `{target_user_id}` eliminado de la lista de autorizados.")
+            else:
+                await message.reply(f"❌ El usuario `{target_user_id}` no estaba en la lista de autorizados.")
+                
+    except Exception as e:
+        await message.reply(f"❌ Error en /ban: {str(e)}")
+
+@app.on_message(filters.command("users"))
+async def list_users_handler(client, message):
+    try:
+        user_id = message.from_user.id
+        
+        if user_id != ADMIN_ID:
+            await message.reply("❌ Solo el administrador puede usar este comando.")
+            return
+        
+        users = load_authorized_users()
+        
+        if not users:
+            await message.reply("📭 No hay usuarios autorizados en la lista.")
+            return
+        
+        user_list = []
+        for i, user in enumerate(users, 1):
+            user_list.append(
+                f"{i}. **ID:** `{user['id']}`\n"
+                f"   **Usuario:** @{user['username'] if user['username'] else 'N/A'}\n"
+                f"   **Agregado:** {user['added_date']}\n"
+            )
+        
+        await message.reply(
+            f"👥 **Usuarios autorizados** ({len(users)}):\n\n" +
+            "\n".join(user_list)
+        )
+        
+    except Exception as e:
+        await message.reply(f"❌ Error en /users: {str(e)}")
+
+@app.on_message(filters.command("ls"))
+@authorized_only
+async def list_files(client, message):
+    try:
+        all_files = get_file_list()
+        
+        if not all_files:
+            await message.reply("📭 No hay archivos guardados.")
+            return
+        
+        total_size = get_total_size()
+        uptime = get_uptime()
+        
+        # Calcular espacio usado por cada archivo individualmente
+        file_sizes = {}
+        for file_path in all_files:
+            try:
+                file_sizes[os.path.basename(file_path)] = os.path.getsize(file_path)
+            except:
+                file_sizes[os.path.basename(file_path)] = 0
+        
+        # Texto mejorado con formato moderno
+        header = f"📂 **𝑫𝒊𝒓𝒆𝒄𝒕𝒐𝒓𝒊𝒐 𝒂𝒄𝒕𝒖𝒂𝒍:** {ROOT_DIR}/\n\n"
+        header += f"⬇️ **𝑻𝒐𝒕𝒂𝒍 𝑫𝒐𝒘𝒏:** {format_file_size(total_size)}\n\n"
+        
+        listado = []
+        for i, path in enumerate(all_files, start=1):
+            file_name = os.path.basename(path)
+            file_size = file_sizes.get(file_name, 0)
+            formatted_size = format_file_size(file_size)
+            
+            # Icono según tipo de archivo
+            if any(file_name.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv']):
+                icon = "🎬"
+            elif any(file_name.lower().endswith(ext) for ext in ['.mp3', '.wav', '.flac', '.aac']):
+                icon = "🎵"
+            elif any(file_name.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+                icon = "🖼️"
+            elif file_name.lower().endswith('.pdf'):
+                icon = "📄"
+            else:
+                icon = "📃"
+            
+            listado.append(f"{i}{icon}**{file_name[:50]}**\n  ➥ ❮/up_{i}❯  ❮/rm_{i}❯ [{formatted_size}]\n")
+        
+        footer = f"\n⏳ **𝑻𝒊𝒆𝒎𝒑𝒐 𝑬𝒏𝒄𝒆𝒏𝒅𝒊𝒅𝒐:** {uptime}\n"
+        footer += f"📦 **𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔:** {CHUNK_SIZE_MB} MB\n"
+        footer += f"👨‍💻 **𝑫𝒆𝒔𝒂𝒓𝒓𝒐𝒍𝒍𝒂𝒅𝒐𝒓:** @Emanuel14APK"
+        
+        # Crear botones inline - SOLO LOS 2 BOTONES REQUERIDOS
+        keyboard = [
+            [
+                InlineKeyboardButton("⬆️ 𝑺𝒖𝒃𝒊𝒓 𝑻𝒐𝒅𝒐", callback_data="upload_all_files"),
+                InlineKeyboardButton("🗑️ 𝑬𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝑻𝒐𝒅𝒐", callback_data="confirm_delete_all_global")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = header + "\n".join(listado) + footer
+        
+        # Dividir si es muy largo
+        if len(text) > 4000:
+            chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for chunk_idx, chunk in enumerate(chunks):
+                if chunk_idx == len(chunks) - 1:
+                    await message.reply(chunk, reply_markup=reply_markup)
+                else:
+                    await message.reply(chunk)
+        else:
+            await message.reply(text, reply_markup=reply_markup)
+            
+    except Exception as e:
+        await message.reply(f"❌ Error en /ls: {str(e)}")
+
+@app.on_message(filters.command("rm"))
+@authorized_only
+async def remove_file(client, message):
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) != 2:
+            await message.reply("**Uso:** /rm <número>\n**Ejemplo:** /rm 2")
+            return
+        
+        idx = int(command_parts[1])
+        all_files = get_file_list()
+        
+        if idx < 1 or idx > len(all_files):
+            await message.reply(f"⚠️ Índice fuera de rango. Usa un número entre 1 y {len(all_files)}")
+            return
+        
+        target = all_files[idx - 1]
+        file_name = os.path.basename(target)
+        
+        try:
+            os.remove(target)
+            await message.reply(f"✅ Archivo eliminado: `{file_name}`")
+        except Exception as e:
+            await message.reply(f"❌ Error al eliminar archivo: {str(e)}")
+            
+    except ValueError:
+        await message.reply("❌ Número inválido. Usa: /rm <número>")
+    except Exception as e:
+        await message.reply(f"❌ Error en /rm: {str(e)}")
+
+@app.on_message(filters.regex(r'^/up'))
+@authorized_only
+async def upload_handler(client, message):
+    """Manejador para /up y /up_<número>"""
+    try:
+        user_id = message.from_user.id
+        text = message.text.strip()
+        
+        # Extraer parámetro
+        if text.startswith('/up_'):
+            param = text[4:]  # Quitar "/up_"
+        else:
+            parts = text.split()
+            param = parts[1] if len(parts) > 1 else None
+        
+        all_files = get_file_list()
+        
+        if not all_files:
+            await message.reply("📭 No hay archivos guardados para subir.")
+            return
+        
+        if param:
+            await process_upload_parameters(client, message, param, all_files)
+        else:
+            # Modo interactivo
+            await select_revista_interactive(client, message, all_files)
+            
+    except Exception as e:
+        await message.reply(f"❌ Error en /up: {str(e)}")
+
+async def select_revista_interactive(client, message, all_files):
+    """Muestra interfaz interactiva para seleccionar revista"""
+    try:
+        list_text = f"📋 **Archivos disponibles** ({len(all_files)}):\n\n"
+        
+        for i, path in enumerate(all_files[:10], start=1):
+            file_name = os.path.basename(path)
+            file_size = format_file_size(os.path.getsize(path))
+            list_text += f"{i}. {file_name} ({file_size})\n"
+        
+        if len(all_files) > 10:
+            list_text += f"\n... y {len(all_files) - 10} más\n"
+        
+        keyboard = []
+        for revista_id, revista_info in REVISTAS.items():
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📚 {revista_info['nombre']}",
+                    callback_data=f"upload_all_{revista_id}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_upload")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply(
+            f"{list_text}\n"
+            f"📦 **Tamaño de partes:** {CHUNK_SIZE_MB} MB\n\n"
+            f"**Seleccione una revista para subir TODOS los archivos:**",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        await message.reply(f"❌ Error: {str(e)}")
+
+@app.on_message(filters.regex(r'^/rm_'))
+@authorized_only
+async def remove_file_underscore(client, message):
+    """Manejador para /rm_<número>"""
+    try:
+        text = message.text.strip()
+        idx_str = text[4:]  # Quitar "/rm_"
+        
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            await message.reply("❌ Número inválido. Usa: /rm_<número>")
+            return
+        
+        all_files = get_file_list()
+        
+        if idx < 1 or idx > len(all_files):
+            await message.reply(f"⚠️ Índice fuera de rango. Usa un número entre 1 y {len(all_files)}")
+            return
+        
+        target = all_files[idx - 1]
+        file_name = os.path.basename(target)
+        
+        try:
+            os.remove(target)
+            await message.reply(f"✅ Archivo eliminado: `{file_name}`")
+        except Exception as e:
+            await message.reply(f"❌ Error al eliminar archivo: {str(e)}")
+            
+    except Exception as e:
+        await message.reply(f"❌ Error en /rm_: {str(e)}")
+
+@app.on_message(filters.command("zips"))
+@authorized_only
+async def set_zip_size(client, message):
+    global CHUNK_SIZE_MB
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.reply("**Uso:** /zips <tamaño_en_MB>\n**Ejemplo:** /zips 10")
+            return
+        
+        raw = parts[1].replace("mb", "").replace(",", ".").strip()
+        new_size = int(float(raw))
+        
+        if new_size < 1 or new_size > 100:
+            await message.reply("⚠️ El tamaño debe estar entre 1 y 100 MB")
+            return
+        
+        CHUNK_SIZE_MB = new_size
+        await message.reply(f"✅ Tamaño de partes cambiado a `{new_size} MB`")
+        
+    except ValueError:
+        await message.reply("❌ Número inválido. Usa: /zips <tamaño_en_MB>")
+    except Exception as e:
+        await message.reply(f"❌ Error en /zips: {str(e)}")
+
+@app.on_message(filters.document | filters.video | filters.audio | filters.photo)
+@authorized_only
+async def save_file(client, message):
+    try:
+        user_id = str(message.from_user.id)
+        user_dir = os.path.join(ROOT_DIR, user_id)
+        
+        os.makedirs(user_dir, exist_ok=True)
+        
+        if message.document:
+            file_name = message.document.file_name or f"document_{message.document.file_id}.bin"
+        elif message.video:
+            file_name = message.video.file_name or f"video_{message.video.file_id}.mp4"
+        elif message.audio:
+            file_name = message.audio.file_name or f"audio_{message.audio.file_id}.mp3"
+        elif message.photo:
+            file_name = f"photo_{message.photo.file_id}.jpg"
+        else:
+            file_name = f"file_{message.id}.bin"
+        
+        file_name = re.sub(r'[<>:"/\\|?*]', '_', file_name)
+        
+        file_path = os.path.join(user_dir, file_name)
+        
+        counter = 1
+        original_name, ext = os.path.splitext(file_name)
+        while os.path.exists(file_path):
+            file_name = f"{original_name}_{counter}{ext}"
+            file_path = os.path.join(user_dir, file_name)
+            counter += 1
+        
+        status_msg = await message.reply(f"⬇️ Descargando: `{file_name}`")
+        
+        await message.download(
+            file_path,
+            progress=progress_bar_generic,
+            progress_args=(status_msg, file_name, "Descargando")
+        )
+        
+        file_size = os.path.getsize(file_path)
+        await status_msg.edit_text(f"✅ Guardado: `{file_name}` ({format_file_size(file_size)})")
+        
+    except Exception as e:
+        await message.reply(f"❌ Error al guardar archivo: {str(e)}")
+
+@app.on_message(filters.command("deleteall"))
+@authorized_only
+async def delete_all(client, message):
+    try:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ 𝑺í, 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝒕𝒐𝒅𝒐", callback_data="confirm_delete_all"),
+                InlineKeyboardButton("❌ 𝑪𝒂𝒏𝒄𝒆𝒍𝒂𝒓", callback_data="cancel_delete_all")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        total_size = get_total_size()
+        all_files = get_file_list()
+        
+        await message.reply(
+            f"⚠️ **¿𝑬𝒔𝒕á 𝒔𝒆𝒈𝒖𝒓𝒐 𝒅𝒆 𝒒𝒖𝒆 𝒅𝒆𝒔𝒆𝒂 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝑻𝑶𝑫𝑶𝑺 𝒍𝒐𝒔 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔?**\n\n"
+            f"📊 **𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔:** {len(all_files)}\n"
+            f"💾 **𝑻𝒂𝒎𝒂ñ𝒐 𝒕𝒐𝒕𝒂𝒍:** {format_file_size(total_size)}\n"
+            f"📂 **𝑫𝒊𝒓𝒆𝒄𝒕𝒐𝒓𝒊𝒐:** `{ROOT_DIR}`\n\n"
+            f"𝑬𝒔𝒕𝒂 𝒂𝒄𝒄𝒊ó𝒏 **𝑵𝑶** 𝒔𝒆 𝒑𝒖𝒆𝒅𝒆 𝒅𝒆𝒔𝒉𝒂𝒄𝒆𝒓.",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        await message.reply(f"❌ Error en /deleteall: {str(e)}")
+
+async def process_upload_parameters(client, message, param, all_files):
+    """Procesa parámetros del comando /up"""
+    try:
+        selected_indices = []
+        
+        if ',' in param:
+            parts = param.split(',')
+            for part in parts:
+                if '-' in part:
+                    start_end = part.split('-')
+                    if len(start_end) == 2:
+                        start = int(start_end[0].strip())
+                        end = int(start_end[1].strip())
+                        selected_indices.extend(range(start, end + 1))
+                else:
+                    selected_indices.append(int(part.strip()))
+        elif '-' in param:
+            start_end = param.split('-')
+            if len(start_end) == 2:
+                start = int(start_end[0].strip())
+                end = int(start_end[1].strip())
+                selected_indices.extend(range(start, end + 1))
+        else:
+            selected_indices.append(int(param))
+        
+        selected_indices = list(set(selected_indices))
+        selected_indices = [idx for idx in selected_indices if 1 <= idx <= len(all_files)]
+        
+        if not selected_indices:
+            await message.reply("❌ No se encontraron archivos válidos con los índices proporcionados.")
+            return
+        
+        selected_files = [all_files[idx-1] for idx in selected_indices]
+        
+        user_id = message.from_user.id
+        user_selected_files[user_id] = selected_files
+        
+        summary = f"📦 **𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒔𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒂𝒅𝒐𝒔** ({len(selected_files)}):\n\n"
+        for i, (idx, file_path) in enumerate(zip(selected_indices, selected_files), 1):
+            file_name = os.path.basename(file_path)
+            file_size = format_file_size(os.path.getsize(file_path))
+            summary += f"{i}. #{idx}: {file_name} ({file_size})\n"
+        
+        keyboard = []
+        for revista_id, revista_info in REVISTAS.items():
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📚 {revista_info['nombre']}",
+                    callback_data=f"upload_selected_{revista_id}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_upload")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply(
+            f"{summary}\n"
+            f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n\n"
+            f"**𝑺𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒆 𝒍𝒂 𝒓𝒆𝒗𝒊𝒔𝒕𝒂 𝒅𝒆𝒔𝒕𝒊𝒏𝒐:**",
+            reply_markup=reply_markup
+        )
+        
+    except ValueError:
+        await message.reply(
+            "❌ Formato inválido.\n\n"
+            "**𝑭𝒐𝒓𝒎𝒂𝒕𝒐𝒔 𝒗á𝒍𝒊𝒅𝒐𝒔:**\n"
+            "• `/up 1` - Subir archivo #1\n"
+            "• `/up_1` - Subir archivo #1 (nuevo formato)\n"
+            "• `/up 1,3,5` - Subir archivos 1, 3 y 5\n"
+            "• `/up 1-5` - Subir archivos 1 al 5\n"
+            "• `/up` - Modo interactivo"
+        )
+    except Exception as e:
+        await message.reply(f"❌ Error en process_upload_parameters: {str(e)}")
+
+@app.on_message(filters.command("clear_rev"))
+@authorized_only
+async def clear_revista_handler(client, message):
+    try:
+        keyboard = []
+        for revista_id, revista_info in REVISTAS.items():
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🗑️ {revista_info['nombre']}",
+                    callback_data=f"clear_rev_{revista_id}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_clear")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply(
+            "⚠️ **𝑨𝑫𝑽𝑬𝑹𝑻𝑬𝑵𝑪𝑰𝑨:** Esta acción eliminará 𝑻𝑶𝑫𝑶𝑺 los archivos de la revista.\n\n"
+            "**𝑺𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒆 𝒍𝒂 𝒓𝒆𝒗𝒊𝒔𝒕𝒂 𝒂 𝒍𝒊𝒎𝒑𝒊𝒂𝒓:**",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        await message.reply(f"❌ Error en /clear_rev: {str(e)}")
+
+@app.on_message(filters.command("settings"))
+async def settings_handler(client, message):
+    try:
+        user_id = message.from_user.id
+        
+        if user_id != ADMIN_ID:
+            await message.reply("❌ No tienes autorización para utilizar este comando.")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("⚙️ Configurar Revista", callback_data="config_revista")],
+            [InlineKeyboardButton("📊 Ver Configuración Actual", callback_data="view_config")],
+            [InlineKeyboardButton("❌ Cerrar Panel", callback_data="close_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await message.reply(
+            "🔧 **𝑷𝑨𝑵𝑬𝑳 𝑫𝑬 𝑪𝑶𝑵𝑭𝑰𝑮𝑼𝑹𝑨𝑪𝑰Ó𝑵**\n\n"
+            "Seleccione una opción:",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        await message.reply(f"❌ Error en /settings: {str(e)}")
+
+# =========================
+# MANEJADOR DE CALLBACKS
+# =========================
+@app.on_callback_query()
+async def handle_callback(client, callback_query):
+    data = callback_query.data
+    user_id = callback_query.from_user.id
+    
+    try:
+        if any(data.startswith(prefix) for prefix in ["upload_", "clear_rev_", "confirm_", "config_", "delete_all"]):
+            if not is_user_authorized(user_id):
+                await callback_query.answer("❌ No estás autorizado.", show_alert=True)
+                return
+        
+        if data == "cancel_upload":
+            await callback_query.message.edit_text("❌ Subida cancelada.")
+            await callback_query.answer()
+            
+        elif data == "cancel_clear":
+            await callback_query.message.edit_text("❌ Limpieza cancelada.")
+            await callback_query.answer()
+            
+        elif data == "cancel_delete_all":
+            await callback_query.message.edit_text("❌ Eliminación cancelada.")
+            await callback_query.answer()
+            
+        elif data == "confirm_delete_all":
+            if os.path.exists(ROOT_DIR):
+                shutil.rmtree(ROOT_DIR)
+            os.makedirs(ROOT_DIR, exist_ok=True)
+            await callback_query.message.edit_text("✅ 𝑻𝒐𝒅𝒐𝒔 𝒍𝒐𝒔 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒉𝒂𝒏 𝒔𝒊𝒅𝒐 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒅𝒐𝒔.")
+            await callback_query.answer()
+            
+        elif data == "confirm_delete_all_global":
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 𝑺í, 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝒕𝒐𝒅𝒐", callback_data="confirm_delete_all"),
+                    InlineKeyboardButton("❌ 𝑪𝒂𝒏𝒄𝒆𝒍𝒂𝒓", callback_data="cancel_delete_all")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            total_size = get_total_size()
+            all_files = get_file_list()
+            
+            await callback_query.message.edit_text(
+                f"⚠️ **𝑪𝒐𝒏𝒇𝒊𝒓𝒎𝒂𝒄𝒊ó𝒏 𝒇𝒊𝒏𝒂𝒍**\n\n"
+                f"¿𝑬𝒔𝒕á 𝑨𝑩𝑺𝑶𝑳𝑼𝑻𝑨𝑴𝑬𝑵𝑻𝑬 𝒔𝒆𝒈𝒖𝒓𝒐 𝒅𝒆 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝑻𝑶𝑫𝑶𝑺 𝒍𝒐𝒔 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔?\n\n"
+                f"📊 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔: {len(all_files)}\n"
+                f"💾 𝑻𝒂𝒎𝒂ñ𝒐 𝒕𝒐𝒕𝒂𝒍: {format_file_size(total_size)}\n\n"
+                f"⚠️ 𝑬𝒔𝒕𝒂 𝒂𝒄𝒄𝒊ó𝒏 𝒆𝒔 𝑰𝑹𝑹𝑬𝑽𝑬𝑹𝑺𝑰𝑩𝑳𝑬!",
+                reply_markup=reply_markup
+            )
+            await callback_query.answer()
+            
+        elif data == "upload_all_files":
+            all_files = get_file_list()
+            
+            if not all_files:
+                await callback_query.answer("📭 No hay archivos para subir.", show_alert=True)
+                return
+            
+            user_selected_files[user_id] = all_files
+            
+            keyboard = []
+            for revista_id, revista_info in REVISTAS.items():
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"📚 {revista_info['nombre']}",
+                        callback_data=f"upload_all_{revista_id}"
+                    )
+                ])
+            
+            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_upload")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await callback_query.message.edit_text(
+                f"📦 **𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒔𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒂𝒅𝒐𝒔:** {len(all_files)}\n"
+                f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n\n"
+                f"**𝑺𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒆 𝒍𝒂 𝒓𝒆𝒗𝒊𝒔𝒕𝒂 𝒅𝒆𝒔𝒕𝒊𝒏𝒐:**",
+                reply_markup=reply_markup
+            )
+            await callback_query.answer()
+            
+        elif data.startswith("upload_all_"):
+            revista_id = data.replace("upload_all_", "")
+            
+            if revista_id not in REVISTAS:
+                await callback_query.answer("❌ Revista no encontrada", show_alert=True)
+                return
+            
+            # Obtener archivos seleccionados o todos
+            if user_id in user_selected_files:
+                selected_files = user_selected_files[user_id]
+            else:
+                selected_files = get_file_list()
+                
+            if not selected_files:
+                await callback_query.message.edit_text("📭 No hay archivos para subir.")
+                await callback_query.answer()
+                return
+            
+            revista_info = REVISTAS[revista_id]
+            
+            await callback_query.answer(f"Iniciando subida a {revista_info['nombre']}...")
+            await callback_query.message.edit_text(
+                f"🚀 **𝑷𝒓𝒆𝒑𝒂𝒓𝒂𝒏𝒅𝒐 𝒔𝒖𝒃𝒊𝒅𝒂 𝒂 {revista_info['nombre']}**\n\n"
+                f"📊 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔: {len(selected_files)}\n"
+                f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n"
+                f"🔑 𝑰𝒏𝒊𝒄𝒊𝒂𝒏𝒅𝒐 𝒔𝒆𝒔𝒊ó𝒏..."
+            )
+            
+            uploader = RevistaUploader(
+                username=revista_info["username"],
+                password=revista_info["password"],
+                submission_id=revista_info["submission_id"],
+                base_url=revista_info["base_url"],
+                contexto=revista_info["contexto"]
+            )
+            
+            active_uploads[user_id] = uploader
+            
+            await perform_upload_with_chunking(client, callback_query.message, user_id, revista_info['nombre'], selected_files)
+            
+            if user_id in active_uploads:
+                del active_uploads[user_id]
+            if user_id in user_selected_files:
+                del user_selected_files[user_id]
+                
+        elif data.startswith("upload_selected_"):
+            revista_id = data.replace("upload_selected_", "")
+            
+            if revista_id not in REVISTAS:
+                await callback_query.answer("❌ Revista no encontrada", show_alert=True)
+                return
+            
+            if user_id not in user_selected_files:
+                await callback_query.message.edit_text("❌ No hay archivos seleccionados.")
+                await callback_query.answer()
+                return
+            
+            selected_files = user_selected_files[user_id]
+            
+            revista_info = REVISTAS[revista_id]
+            
+            await callback_query.answer(f"Iniciando subida a {revista_info['nombre']}...")
+            await callback_query.message.edit_text(
+                f"🚀 **𝑷𝒓𝒆𝒑𝒂𝒓𝒂𝒏𝒅𝒐 𝒔𝒖𝒃𝒊𝒅𝒂 𝒂 {revista_info['nombre']}**\n\n"
+                f"📊 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒔𝒆𝒍𝒆𝒄𝒄𝒊𝒐𝒏𝒂𝒅𝒐𝒔: {len(selected_files)}\n"
+                f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n"
+                f"🔑 𝑰𝒏𝒊𝒄𝒊𝒂𝒏𝒅𝒐 𝒔𝒆𝒔𝒊ó𝒏..."
+            )
+            
+            uploader = RevistaUploader(
+                username=revista_info["username"],
+                password=revista_info["password"],
+                submission_id=revista_info["submission_id"],
+                base_url=revista_info["base_url"],
+                contexto=revista_info["contexto"]
+            )
+            
+            active_uploads[user_id] = uploader
+            
+            await perform_upload_with_chunking(client, callback_query.message, user_id, revista_info['nombre'], selected_files)
+            
+            if user_id in active_uploads:
+                del active_uploads[user_id]
+            if user_id in user_selected_files:
+                del user_selected_files[user_id]
+                
+        elif data.startswith("clear_rev_"):
+            revista_id = data.replace("clear_rev_", "")
+            
+            if revista_id not in REVISTAS:
+                await callback_query.answer("❌ Revista no encontrada", show_alert=True)
+                return
+            
+            revista_info = REVISTAS[revista_id]
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 𝑺í, 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝒕𝒐𝒅𝒐", callback_data=f"confirm_clear_{revista_id}"),
+                    InlineKeyboardButton("❌ 𝑪𝒂𝒏𝒄𝒆𝒍𝒂𝒓", callback_data="cancel_clear")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await callback_query.message.edit_text(
+                f"⚠️ **𝑪𝑶𝑵𝑭𝑰𝑹𝑴𝑨𝑪𝑰Ó𝑵 𝑹𝑬𝑸𝑼𝑬𝑹𝑰𝑫𝑨**\n\n"
+                f"¿𝑬𝒔𝒕á 𝒔𝒆𝒈𝒖𝒓𝒐 𝒅𝒆 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝑻𝑶𝑫𝑶𝑺 𝒍𝒐𝒔 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒅𝒆:\n"
+                f"📚 **{revista_info['nombre']}**?\n\n"
+                f"𝑬𝒔𝒕𝒂 𝒂𝒄𝒄𝒊ó𝒏 𝑵𝑶 𝒔𝒆 𝒑𝒖𝒆𝒅𝒆 𝒅𝒆𝒔𝒉𝒂𝒄𝒆𝒓.",
+                reply_markup=reply_markup
+            )
+            await callback_query.answer()
+            
+        elif data.startswith("confirm_clear_"):
+            revista_id = data.replace("confirm_clear_", "")
+            
+            if revista_id not in REVISTAS:
+                await callback_query.answer("❌ Revista no encontrada", show_alert=True)
+                return
+            
+            revista_info = REVISTAS[revista_id]
+            
+            await callback_query.answer(f"Limpiando {revista_info['nombre']}...")
+            await callback_query.message.edit_text(f"🔑 𝑰𝒏𝒊𝒄𝒊𝒂𝒏𝒅𝒐 𝒔𝒆𝒔𝒊ó𝒏 𝒆𝒏 {revista_info['nombre']}...")
+            
+            uploader = RevistaUploader(
+                username=revista_info["username"],
+                password=revista_info["password"],
+                submission_id=revista_info["submission_id"],
+                base_url=revista_info["base_url"],
+                contexto=revista_info["contexto"]
+            )
+            
+            await clear_revista_files(client, callback_query.message, uploader, revista_info['nombre'])
+        
+        elif data == "config_revista":
+            if user_id != ADMIN_ID:
+                await callback_query.answer("❌ Solo el administrador puede configurar revistas.", show_alert=True)
+                return
+            
+            keyboard = []
+            for revista_id, revista_info in REVISTAS.items():
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"📚 {revista_info['nombre']}",
+                        callback_data=f"select_rev_{revista_id}"
+                    )
+                ])
+            
+            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="close_panel")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await callback_query.message.edit_text(
+                "🔧 **𝑪𝑶𝑵𝑭𝑰𝑮𝑼𝑹𝑨𝑹 𝑹𝑬𝑽𝑰𝑺𝑻𝑨**\n\n"
+                "Seleccione la revista que desea configurar:",
+                reply_markup=reply_markup
+            )
+            await callback_query.answer()
+        
+        elif data.startswith("select_rev_"):
+            revista_id = data.replace("select_rev_", "")
+            
+            if revista_id not in REVISTAS:
+                await callback_query.answer("❌ Revista no encontrada", show_alert=True)
+                return
+            
+            user_config_states[user_id] = {
+                'revista_id': revista_id,
+                'step': 'username'
+            }
+            
+            revista_info = REVISTAS[revista_id]
+            
+            await callback_query.message.edit_text(
+                f"🔧 **𝑪𝒐𝒏𝒇𝒊𝒈𝒖𝒓𝒂𝒏𝒅𝒐: {revista_info['nombre']}**\n\n"
+                f"📝 **𝑷𝒂𝒔𝒐 1 𝒅𝒆 3: 𝑵𝒐𝒎𝒃𝒓𝒆 𝒅𝒆 𝒖𝒔𝒖𝒂𝒓𝒊𝒐**\n\n"
+                f"Nombre de usuario actual: `{revista_info['username']}`\n\n"
+                f"𝑷𝒐𝒓 𝒇𝒂𝒗𝒐𝒓, 𝒆𝒏𝒗í𝒆 𝒆𝒍 𝒏𝒖𝒆𝒗𝒐 𝒏𝒐𝒎𝒃𝒓𝒆 𝒅𝒆 𝒖𝒔𝒖𝒂𝒓𝒊𝒐:"
+            )
+            await callback_query.answer("📝 Envíe el nombre de usuario...")
+        
+        elif data == "view_config":
+            if user_id != ADMIN_ID:
+                await callback_query.answer("❌ Solo el administrador puede ver la configuración.", show_alert=True)
+                return
+            
+            config_text = "🔧 **𝑪𝑶𝑵𝑭𝑰𝑮𝑼𝑹𝑨𝑪𝑰Ó𝑵 𝑨𝑪𝑻𝑼𝑨𝑳**\n\n"
+            
+            for revista_id, revista_info in REVISTAS.items():
+                config_text += f"📚 **{revista_info['nombre']}** ({revista_id})\n"
+                config_text += f"• 𝑼𝒔𝒖𝒂𝒓𝒊𝒐: `{revista_info['username']}`\n"
+                config_text += f"• 𝑺𝒖𝒃𝒎𝒊𝒔𝒔𝒊𝒐𝒏 𝑰𝑫: `{revista_info['submission_id']}`\n"
+                config_text += f"• 𝑼𝑹𝑳: {revista_info['base_url']}\n"
+                config_text += f"• 𝑪𝒐𝒏𝒕𝒆𝒙𝒕𝒐: {revista_info['contexto']}\n\n"
+            
+            config_text += f"📦 **𝑪𝒐𝒏𝒇𝒊𝒈𝒖𝒓𝒂𝒄𝒊ó𝒏 𝒈𝒆𝒏𝒆𝒓𝒂𝒍:**\n"
+            config_text += f"• 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n"
+            config_text += f"• 𝑫𝒊𝒓𝒆𝒄𝒕𝒐𝒓𝒊𝒐 𝒓𝒂í𝒛: {ROOT_DIR}\n"
+            
+            await callback_query.message.edit_text(config_text)
+            await callback_query.answer()
+        
+        elif data == "close_panel":
+            await callback_query.message.delete()
+            await callback_query.answer("Panel cerrado")
+            
+    except Exception as e:
+        await callback_query.message.edit_text(f"❌ Error en callback: {str(e)}")
+        await callback_query.answer("Error", show_alert=True)
+
+# =========================
+# MANEJADOR DE MENSAJES PARA CONFIGURACIÓN
+# =========================
+@app.on_message(filters.private & filters.text)
+async def handle_config_messages(client, message):
+    try:
+        # Si el mensaje es un comando, ignorarlo
+        if message.text.startswith('/'):
+            return
+            
+        user_id = message.from_user.id
+        
+        if user_id in user_config_states:
+            config_state = user_config_states[user_id]
+            revista_id = config_state['revista_id']
+            step = config_state['step']
+            
+            if revista_id not in REVISTAS:
+                del user_config_states[user_id]
+                await message.reply("❌ Error: Revista no encontrada.")
+                return
+            
+            revista_info = REVISTAS[revista_id]
+            
+            if step == 'username':
+                REVISTAS[revista_id]['username'] = message.text.strip()
+                config_state['step'] = 'password'
+                
+                await message.reply(
+                    f"✅ **𝑵𝒐𝒎𝒃𝒓𝒆 𝒅𝒆 𝒖𝒔𝒖𝒂𝒓𝒊𝒐 𝒂𝒄𝒕𝒖𝒂𝒍𝒊𝒛𝒂𝒅𝒐**\n\n"
+                    f"📝 **𝑷𝒂𝒔𝒐 2 𝒅𝒆 3: 𝑪𝒐𝒏𝒕𝒓𝒂𝒔𝒆ñ𝒂**\n\n"
+                    f"Contraseña actual: `{revista_info['password']}`\n\n"
+                    f"𝑷𝒐𝒓 𝒇𝒂𝒗𝒐𝒓, 𝒆𝒏𝒗í𝒆 𝒍𝒂 𝒏𝒖𝒆𝒗𝒂 𝒄𝒐𝒏𝒕𝒓𝒂𝒔𝒆ñ𝒂:"
+                )
+                
+            elif step == 'password':
+                REVISTAS[revista_id]['password'] = message.text.strip()
+                config_state['step'] = 'submission_id'
+                
+                await message.reply(
+                    f"✅ **𝑪𝒐𝒏𝒕𝒓𝒂𝒔𝒆ñ𝒂 𝒂𝒄𝒕𝒖𝒂𝒍𝒊𝒛𝒂𝒅𝒂**\n\n"
+                    f"📝 **𝑷𝒂𝒔𝒐 3 𝒅𝒆 3: 𝑺𝒖𝒃𝒎𝒊𝒔𝒔𝒊𝒐𝒏 𝑰𝑫**\n\n"
+                    f"Submission ID actual: `{revista_info['submission_id']}`\n\n"
+                    f"𝑷𝒐𝒓 𝒇𝒂𝒗𝒐𝒓, 𝒆𝒏𝒗í𝒆 𝒆𝒍 𝒏𝒖𝒆𝒗𝒐 𝑺𝒖𝒃𝒎𝒊𝒔𝒔𝒊𝒐𝒏 𝑰𝑫:"
+                )
+                
+            elif step == 'submission_id':
+                REVISTAS[revista_id]['submission_id'] = message.text.strip()
+                
+                if save_revistas_config(REVISTAS):
+                    del user_config_states[user_id]
+                    
+                    await message.reply(
+                        f"🎉 **¡𝑪𝒐𝒏𝒇𝒊𝒈𝒖𝒓𝒂𝒄𝒊ó𝒏 𝒄𝒐𝒎𝒑𝒍𝒆𝒕𝒂𝒅𝒂!**\n\n"
+                        f"📚 **𝑹𝒆𝒗𝒊𝒔𝒕𝒂:** {revista_info['nombre']}\n"
+                        f"👤 **𝑼𝒔𝒖𝒂𝒓𝒊𝒐:** `{REVISTAS[revista_id]['username']}`\n"
+                        f"🔑 **𝑷𝒂𝒔𝒔𝒘𝒐𝒓𝒅:** `{REVISTAS[revista_id]['password']}`\n"
+                        f"📄 **𝑺𝒖𝒃𝒎𝒊𝒔𝒔𝒊𝒐𝒏 𝑰𝑫:** `{REVISTAS[revista_id]['submission_id']}`\n\n"
+                        f"✅ 𝑳𝒂 𝒄𝒐𝒏𝒇𝒊𝒈𝒖𝒓𝒂𝒄𝒊ó𝒏 𝒉𝒂 𝒔𝒊𝒅𝒐 𝒈𝒖𝒂𝒓𝒅𝒂𝒅𝒂 𝒆𝒙𝒊𝒕𝒐𝒔𝒂𝒎𝒆𝒏𝒕𝒆."
+                    )
+                else:
+                    await message.reply("❌ Error al guardar la configuración.")
+                    
+    except Exception as e:
+        await message.reply(f"❌ Error en configuración: {str(e)}")
+        if user_id in user_config_states:
+            del user_config_states[user_id]
+
+# =========================
+# FUNCIONES DE SUBIDA CON DIVISIÓN DE ARCHIVOS
+# =========================
+
+async def perform_upload_with_chunking(client, message, user_id, revista_nombre, files_to_upload):
+    """Realiza el proceso de subida CON DIVISIÓN DE ARCHIVOS GRANDES"""
+    
+    if user_id not in active_uploads:
+        await message.edit_text("❌ Error: No hay uploader activo.")
+        return
+    
+    uploader = active_uploads[user_id]
+    status_msg = message
+    all_urls = []
+    
+    try:
+        await status_msg.edit_text("🔑 𝑰𝒏𝒊𝒄𝒊𝒂𝒏𝒅𝒐 𝒔𝒆𝒔𝒊ó𝒏 𝒆𝒏 𝒍𝒂 𝒓𝒆𝒗𝒊𝒔𝒕𝒂...")
+        
+        if not uploader.login():
+            await status_msg.edit_text("❌ Error al iniciar sesión en la revista.")
+            return
+
+        await status_msg.edit_text(f"✅ 𝑳𝒐𝒈𝒊𝒏 𝒆𝒙𝒊𝒕𝒐𝒔𝒐\n📋 𝑺𝒖𝒃𝒎𝒊𝒔𝒔𝒊𝒐𝒏 𝑰𝑫: {uploader.submission_id}\n➡️ 𝑵𝒂𝒗𝒆𝒈𝒂𝒏𝒅𝒐 𝒂 𝒑𝒂𝒔𝒐 2...")
+        
+        if not uploader.navigate_to_step_2():
+            await status_msg.edit_text("❌ No se pudo acceder al paso 2 del envío.")
+            return
+
+        timestamp = int(time.time())
+        maestro_path = os.path.join(ROOT_DIR, f"maestro_{revista_nombre.replace(' ', '_')}_{timestamp}.txt")
+        
+        with open(maestro_path, "w", encoding="utf-8") as maestro:
+            maestro.write(f"# URLs de partes subidas - {revista_nombre}\n")
+            maestro.write(f"# Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            maestro.write(f"# Archivos: {len(files_to_upload)}\n")
+            maestro.write(f"# Tamaño partes: {CHUNK_SIZE_MB} MB\n\n")
+
+            total_files = len(files_to_upload)
+            uploaded_count = 0
+            failed_count = 0
+            
+            for idx, file_path in enumerate(files_to_upload, 1):
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                file_size_mb = file_size / 1024 / 1024
+                
+                if file_size > uploader.chunk_size:
+                    total_parts = (file_size // uploader.chunk_size) + (1 if file_size % uploader.chunk_size else 0)
+                    
+                    await status_msg.edit_text(
+                        f"📚 **𝑹𝒆𝒗𝒊𝒔𝒕𝒂:** {revista_nombre}\n"
+                        f"📂 [{idx}/{total_files}] {file_name}\n"
+                        f"📦 𝑻𝒂𝒎𝒂ñ𝒐: {file_size_mb:.2f} MB → {total_parts} partes\n"
+                        f"🔄 𝑷𝒓𝒆𝒑𝒂𝒓𝒂𝒏𝒅𝒐 𝒑𝒂𝒓𝒕𝒆𝒔...\n"
+                        f"✅ 𝑺𝒖𝒃𝒊𝒅𝒐𝒔: {uploaded_count} | ❌ 𝑭𝒂𝒍𝒍𝒐𝒔: {failed_count}\n\n"
+                        f"👨‍💻 𝑫𝒆𝒔𝒂𝒓𝒓𝒐𝒍𝒍𝒂𝒅𝒐𝒓: @Emanuel14APK"
+                    )
+                    
+                    parts_dir = os.path.join(ROOT_DIR, f"{file_name}_parts_{int(time.time())}")
+                    parts = prepare_chunked_parts(file_path, uploader.chunk_size, parts_dir)
+                    
+                    if not parts:
+                        await status_msg.edit_text(f"❌ Error al preparar partes para {file_name}")
+                        failed_count += 1
+                        maestro.write(f"Archivo: {file_name} - ERROR al preparar partes\n\n")
+                        continue
+                    
+                    file_success = True
+                    
+                    for part in parts:
+                        part_idx = part["part_idx"]
+                        part_name = part["name"]
+                        part_path = part["pdf_path"]
+                        part_size = part["size"]
+                        
+                        await status_msg.edit_text(
+                            f"📤 **𝑺𝒖𝒃𝒊𝒆𝒏𝒅𝒐 𝒑𝒂𝒓𝒕𝒆 {part_idx}/{len(parts)}**\n"
+                            f"📄 𝑨𝒓𝒄𝒉𝒊𝒗𝒐: {file_name}\n"
+                            f"📦 𝑷𝒂𝒓𝒕𝒆: {part_name}\n"
+                            f"⚡ 𝑷𝒓𝒐𝒈𝒓𝒆𝒔𝒐: 0%"
+                        )
+                        
+                        info = uploader.upload_file_to_submission(part_path, original_name=part_name)
+                        
+                        if info:
+                            maestro.write(f"Archivo: {file_name} - Parte {part_idx}/{len(parts)}\n")
+                            maestro.write(f"URL: {info['url']}\n")
+                            maestro.write(f"Tamaño: {part_size} bytes\n\n")
+                            
+                            all_urls.append(info['url'])
+                            
+                            await status_msg.edit_text(
+                                f"✅ **𝑷𝒂𝒓𝒕𝒆 {part_idx}/{len(parts)} 𝒔𝒖𝒃𝒊𝒅𝒂**\n"
+                                f"📄 𝑨𝒓𝒄𝒉𝒊𝒗𝒐: {file_name}\n"
+                                f"📦 𝑷𝒂𝒓𝒕𝒆: {part_name}\n"
+                                f"⚡ 𝑷𝒓𝒐𝒈𝒓𝒆𝒔𝒐: {part_idx}/{len(parts)} 𝒑𝒂𝒓𝒕𝒆𝒔"
+                            )
+                        else:
+                            await status_msg.edit_text(f"❌ Error al subir parte {part_idx} de {file_name}")
+                            file_success = False
+                            break
+                        
+                        await asyncio.sleep(1)
+                    
+                    try:
+                        if os.path.exists(parts_dir):
+                            shutil.rmtree(parts_dir)
+                    except Exception as e:
+                        print(f"⚠️ Error al limpiar directorio de partes: {e}")
+                    
+                    if file_success:
+                        uploaded_count += 1
+                        await status_msg.edit_text(f"✅ [{idx}/{total_files}] {file_name} completado ({len(parts)} partes)\n\n⏳ 𝑪𝒐𝒏𝒕𝒊𝒏𝒖𝒂𝒏𝒅𝒐...")
+                    else:
+                        failed_count += 1
+                        await status_msg.edit_text(f"❌ [{idx}/{total_files}] {file_name} falló\n\n⏳ 𝑪𝒐𝒏𝒕𝒊𝒏𝒖𝒂𝒏𝒅𝒐...")
+                        
+                else:
+                    await status_msg.edit_text(
+                        f"📚 **𝑹𝒆𝒗𝒊𝒔𝒕𝒂:** {revista_nombre}\n"
+                        f"📤 [{idx}/{total_files}] 𝑺𝒖𝒃𝒊𝒆𝒏𝒅𝒐: {file_name}\n"
+                        f"📦 𝑻𝒂𝒎𝒂ñ𝒐: {file_size_mb:.2f} MB\n"
+                        f"✅ 𝑺𝒖𝒃𝒊𝒅𝒐𝒔: {uploaded_count} | ❌ 𝑭𝒂𝒍𝒍𝒐𝒔: {failed_count}\n\n"
+                        f"⏳ 𝑷𝒐𝒓 𝒇𝒂𝒗𝒐𝒓 𝒆𝒔𝒑𝒆𝒓𝒂..."
+                    )
+                    
+                    upload_path = file_path
+                    if not file_path.lower().endswith(".pdf"):
+                        fake_path = fake_pdf(file_path)
+                        if fake_path:
+                            upload_path = fake_path
+                            print(f"✅ Archivo renombrado a PDF: {file_name}")
+                        else:
+                            await status_msg.edit_text(f"❌ No se pudo renombrar {file_name}")
+                            failed_count += 1
+                            maestro.write(f"Archivo: {file_name} - ERROR al renombrar\n\n")
+                            continue
+                    
+                    info = uploader.upload_file_to_submission(upload_path)
+                    
+                    if info:
+                        uploaded_count += 1
+                        maestro.write(f"Archivo: {file_name}\n")
+                        maestro.write(f"URL: {info['url']}\n")
+                        maestro.write(f"Tamaño: {file_size} bytes\n\n")
+                        
+                        all_urls.append(info['url'])
+                        
+                        if upload_path != file_path and os.path.exists(upload_path):
+                            try:
+                                os.remove(upload_path)
+                            except:
+                                pass
+                                
+                        await status_msg.edit_text(f"✅ [{idx}/{total_files}] {file_name} subido\n\n⏳ 𝑪𝒐𝒏𝒕𝒊𝒏𝒖𝒂𝒏𝒅𝒐...")
+                    else:
+                        failed_count += 1
+                        await status_msg.edit_text(f"❌ [{idx}/{total_files}] Error al subir {file_name}\n\n⏳ 𝑪𝒐𝒏𝒕𝒊𝒏𝒖𝒂𝒏𝒅𝒐...")
+                        maestro.write(f"Archivo: {file_name} - ERROR al subir\n\n")
+                
+                await asyncio.sleep(1)
+            
+            await status_msg.edit_text(
+                f"✅ **𝑷𝒓𝒐𝒄𝒆𝒔𝒐 𝒅𝒆 𝒔𝒖𝒃𝒊𝒅𝒂 𝒇𝒊𝒏𝒂𝒍𝒊𝒛𝒂𝒅𝒐**\n\n"
+                f"📚 𝑹𝒆𝒗𝒊𝒔𝒕𝒂: {revista_nombre}\n"
+                f"📦 𝑻𝒐𝒕𝒂𝒍 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔: {total_files}\n"
+                f"✅ 𝑺𝒖𝒃𝒊𝒅𝒐𝒔 𝒆𝒙𝒊𝒕𝒐𝒔𝒂𝒎𝒆𝒏𝒕𝒆: {uploaded_count}\n"
+                f"❌ 𝑭𝒂𝒍𝒍𝒐𝒔: {failed_count}\n"
+                f"📄 𝑮𝒆𝒏𝒆𝒓𝒂𝒏𝒅𝒐 𝒂𝒓𝒄𝒉𝒊𝒗𝒐 𝒎𝒂𝒆𝒔𝒕𝒓𝒐..."
+            )
+        
+        if all_urls:
+            urls_text = f"🔗 **𝑼𝑹𝑳𝒔 𝒔𝒖𝒃𝒊𝒅𝒂𝒔 𝒂 {revista_nombre}**\n\n"
+            urls_text += f"📊 𝑻𝒐𝒕𝒂𝒍 𝑼𝑹𝑳𝒔: {len(all_urls)}\n\n"
+            
+            for i, url in enumerate(all_urls, 1):
+                urls_text += f"{i}. {url}\n"
+            
+            if len(urls_text) > 4000:
+                chunks = [urls_text[i:i+4000] for i in range(0, len(urls_text), 4000)]
+                for chunk in chunks:
+                    await status_msg.reply(chunk)
+                await status_msg.reply(f"📄 **𝑵𝒐𝒕𝒂:** Se encontraron {len(all_urls)} URLs en total.")
+            else:
+                await status_msg.reply(urls_text)
+        
+        if os.path.exists(maestro_path):
+            await client.send_document(
+                chat_id=status_msg.chat.id,
+                document=maestro_path,
+                caption=(
+                    f"📄 **𝑨𝒓𝒄𝒉𝒊𝒗𝒐 𝒎𝒂𝒆𝒔𝒕𝒓𝒐 - {revista_nombre}**\n"
+                    f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB\n"
+                    f"✅ {uploaded_count} 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒔𝒖𝒃𝒊𝒅𝒐𝒔 𝒆𝒙𝒊𝒕𝒐𝒔𝒂𝒎𝒆𝒏𝒕𝒆\n"
+                    f"❌ {failed_count} 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒇𝒂𝒍𝒍𝒂𝒓𝒐𝒏\n"
+                    f"📋 𝑻𝒐𝒕𝒂𝒍 𝒑𝒓𝒐𝒄𝒆𝒔𝒂𝒅𝒐𝒔: {total_files}\n"
+                    f"🔗 𝑼𝑹𝑳𝒔 𝒕𝒐𝒕𝒂𝒍𝒆𝒔: {len(all_urls)}\n"
+                    f"👨‍💻 𝑫𝒆𝒔𝒂𝒓𝒓𝒐𝒍𝒍𝒂𝒅𝒐𝒓: @Emanuel14APK"
+                )
+            )
+        
+        await status_msg.edit_text(
+            f"🎉 **¡𝑷𝒓𝒐𝒄𝒆𝒔𝒐 𝒄𝒐𝒎𝒑𝒍𝒆𝒕𝒂𝒅𝒐!**\n\n"
+            f"📚 𝑹𝒆𝒗𝒊𝒔𝒕𝒂: {revista_nombre}\n"
+            f"📦 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒑𝒓𝒐𝒄𝒆𝒔𝒂𝒅𝒐𝒔: {total_files}\n"
+            f"✅ 𝑺𝒖𝒃𝒊𝒅𝒐𝒔 𝒆𝒙𝒊𝒕𝒐𝒔𝒂𝒎𝒆𝒏𝒕𝒆: {uploaded_count}\n"
+            f"❌ 𝑭𝒂𝒍𝒍𝒐𝒔: {failed_count}\n"
+            f"🔗 𝑼𝑹𝑳𝒔 𝒈𝒆𝒏𝒆𝒓𝒂𝒅𝒂𝒔: {len(all_urls)}\n"
+            f"📄 𝑹𝒆𝒗𝒊𝒔𝒂 𝒍𝒂𝒔 𝑼𝑹𝑳𝒔 𝒚 𝒆𝒍 𝒂𝒓𝒄𝒉𝒊𝒗𝒐 𝒎𝒂𝒆𝒔𝒕𝒓𝒐.\n\n"
+            f"👨‍💻 𝑫𝒆𝒔𝒂𝒓𝒓𝒐𝒍𝒍𝒂𝒅𝒐𝒓: @Emanuel14APK"
+        )
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error en la subida: {str(e)}")
+
+async def clear_revista_files(client, message, uploader, revista_nombre):
+    """Limpia los archivos de una revista"""
+    status_msg = message
+    
+    try:
+        await status_msg.edit_text("🔑 𝑰𝒏𝒊𝒄𝒊𝒂𝒏𝒅𝒐 𝒔𝒆𝒔𝒊ó𝒏...")
+        if not uploader.login():
+            await status_msg.edit_text("❌ Error al iniciar sesión.")
+            return
+        
+        await status_msg.edit_text("📋 𝑶𝒃𝒕𝒆𝒏𝒊𝒆𝒏𝒅𝒐 𝒍𝒊𝒔𝒕𝒂 𝒅𝒆 𝒂𝒓𝒄𝒉𝒊𝒗𝒐𝒔...")
+        files = uploader.get_submission_files()
+        
+        if not files:
+            await status_msg.edit_text(f"📭 No hay archivos en {revista_nombre}.")
+            return
+        
+        total_files = len(files)
+        deleted_count = 0
+        
+        await status_msg.edit_text(
+            f"🗑️ **𝑳𝒊𝒎𝒑𝒊𝒂𝒏𝒅𝒐 {revista_nombre}**\n\n"
+            f"📊 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒆𝒏𝒄𝒐𝒏𝒕𝒓𝒂𝒅𝒐𝒔: {total_files}\n"
+            f"⏳ 𝑬𝒍𝒊𝒎𝒊𝒏𝒂𝒏𝒅𝒐..."
+        )
+        
+        for i, file_info in enumerate(files, 1):
+            if isinstance(file_info, dict):
+                file_id = file_info.get('id')
+                file_name = file_info.get('name', f'Archivo {i}')
+                if isinstance(file_name, dict):
+                    file_name = file_name.get('es_ES', f'Archivo {i}')
+            else:
+                file_id = file_info
+                file_name = f'Archivo {i}'
+            
+            if file_id:
+                if uploader.delete_file(file_id):
+                    deleted_count += 1
+                
+                if i % 5 == 0:
+                    await status_msg.edit_text(
+                        f"🗑️ **𝑳𝒊𝒎𝒑𝒊𝒂𝒏𝒅𝒐 {revista_nombre}**\n\n"
+                        f"📊 𝑷𝒓𝒐𝒈𝒓𝒆𝒔𝒐: {i}/{total_files}\n"
+                        f"✅ 𝑬𝒍𝒊𝒎𝒊𝒏𝒂𝒅𝒐𝒔: {deleted_count}"
+                    )
+                
+                await asyncio.sleep(1)
+        
+        await status_msg.edit_text(
+            f"✅ **𝑳𝒊𝒎𝒑𝒊𝒆𝒛𝒂 𝒄𝒐𝒎𝒑𝒍𝒆𝒕𝒂𝒅𝒂**\n\n"
+            f"📚 𝑹𝒆𝒗𝒊𝒔𝒕𝒂: {revista_nombre}\n"
+            f"🗑️ 𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 𝒆𝒍𝒊𝒎𝒊𝒏𝒂𝒅𝒐𝒔: {deleted_count}/{total_files}\n"
+            f"🕐 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error en la limpieza: {str(e)}")
+
+# =========================
+# INICIAR BOT
+# =========================
+print("=" * 60)
+print("🚀 𝑩𝑶𝑻 𝑫𝑬 𝑮𝑬𝑺𝑻𝑰Ó𝑵 𝑫𝑬 𝑹𝑬𝑽𝑰𝑺𝑻𝑨𝑺 - 𝑰𝑵𝑰𝑪𝑰𝑨𝑵𝑫𝑶")
+print("=" * 60)
+print(f"✅ 𝑩𝒐𝒕 𝑻𝒐𝒌𝒆𝒏: {'*' * 20}{BOT_TOKEN[-5:]}")
+print(f"✅ 𝑨𝑷𝑰 𝑰𝑫: {API_ID}")
+print(f"👑 𝑨𝒅𝒎𝒊𝒏𝒊𝒔𝒕𝒓𝒂𝒅𝒐𝒓 𝑰𝑫: {ADMIN_ID}")
+print(f"📂 𝑫𝒊𝒓𝒆𝒄𝒕𝒐𝒓𝒊𝒐 𝒓𝒂í𝒛: {ROOT_DIR}")
+print(f"📦 𝑻𝒂𝒎𝒂ñ𝒐 𝒅𝒆 𝒑𝒂𝒓𝒕𝒆𝒔: {CHUNK_SIZE_MB} MB")
+print(f"📚 𝑹𝒆𝒗𝒊𝒔𝒕𝒂𝒔 𝒄𝒐𝒏𝒇𝒊𝒈𝒖𝒓𝒂𝒅𝒂𝒔: {len(REVISTAS)}")
+print(f"👥 𝑼𝒔𝒖𝒂𝒓𝒊𝒐𝒔 𝒂𝒖𝒕𝒐𝒓𝒊𝒛𝒂𝒅𝒐𝒔: {len(load_authorized_users())}")
+
+print("\n" + "=" * 60)
+print("📋 𝑪𝑶𝑴𝑨𝑵𝑫𝑶𝑺 𝑪𝑶𝑵𝑭𝑰𝑮𝑼𝑹𝑨𝑫𝑶𝑺:")
+print("=" * 60)
+print("🔓 𝑷Ú𝑩𝑳𝑰𝑪𝑶𝑺 (𝒔𝒊𝒏 𝒂𝒖𝒕𝒐𝒓𝒊𝒛𝒂𝒄𝒊ó𝒏):")
+print("  • /start - Iniciar bot")
+print("  • /help - Ayuda completa")
+print("\n👑 𝑺𝑶𝑳𝑶 𝑨𝑫𝑴𝑰𝑵𝑰𝑺𝑻𝑹𝑨𝑫𝑶𝑹:")
+print("  • /add <id/@user> - Agregar usuario")
+print("  • /ban <id> - Eliminar usuario")
+print("  • /users - Listar usuarios")
+print("  • /settings - Panel de configuración")
+print("\n🔒 𝑼𝑺𝑼𝑨𝑹𝑰𝑶𝑺 𝑨𝑼𝑻𝑶𝑹𝑰𝒁𝑨𝑫𝑶𝑺:")
+print("  • /ls - Listar archivos (𝒊𝒏𝒕𝒆𝒓𝒇𝒂𝒛 𝒎𝒐𝒅𝒆𝒓𝒏𝒂)")
+print("  • /rm <número> - Eliminar archivo")
+print("  • /rm_<número> - Eliminar archivo (nuevo formato)")
+print("  • /deleteall - Eliminar todo")
+print("  • /up - Subir archivos (𝑪𝑶𝑵 𝑫𝑰𝑽𝑰𝑺𝑰Ó𝑵)")
+print("  • /up_<número> - Subir archivo específico")
+print("  • /zips <MB> - Cambiar tamaño partes")
+print("  • /clear_rev - Limpiar revista")
+
+print("\n" + "=" * 60)
+print("🆕 **𝑵𝑼𝑬𝑽𝑨𝑺 𝑪𝑨𝑹𝑨𝑪𝑻𝑬𝑹Í𝑺𝑻𝑰𝑪𝑨𝑺:**")
+print("   • 𝑰𝒏𝒕𝒆𝒓𝒇𝒂𝒛 𝒎𝒐𝒅𝒆𝒓𝒏𝒊𝒛𝒂𝒅𝒂 𝒆𝒏 /ls")
+print("   • 𝑺𝒐𝒑𝒐𝒓𝒕𝒆 𝒑𝒂𝒓𝒂 /up_<número>")
+print("   • 2 𝒃𝒐𝒕𝒐𝒏𝒆𝒔: 𝑺𝒖𝒃𝒊𝒓 𝑻𝒐𝒅𝒐/𝑬𝒍𝒊𝒎𝒊𝒏𝒂𝒓 𝑻𝒐𝒅𝒐")
+print("   • 𝑻𝒊𝒆𝒎𝒑𝒐 𝒅𝒆 𝒂𝒄𝒕𝒊𝒗𝒊𝒅𝒂𝒅 𝒅𝒆𝒍 𝒃𝒐𝒕")
+print("=" * 60)
+print("\n🔄 **𝑫𝑰𝑽𝑰𝑺𝑰Ó𝑵 𝑫𝑬 𝑨𝑹𝑪𝑯𝑰𝑽𝑶𝑺 𝑨𝑪𝑻𝑰𝑽𝑨𝑫𝑨**")
+print(f"   𝑨𝒓𝒄𝒉𝒊𝒗𝒐𝒔 > {CHUNK_SIZE_MB} MB 𝒔𝒆 𝒅𝒊𝒗𝒊𝒅𝒊𝒓á𝒏 𝒂𝒖𝒕𝒐𝒎á𝒕𝒊𝒄𝒂𝒎𝒆𝒏𝒕𝒆")
+print("=" * 60)
+print("\n👨‍💻 𝑫𝒆𝒔𝒂𝒓𝒓𝒐𝒍𝒍𝒂𝒅𝒐𝒓: @Emanuel14APK")
+print("=" * 60)
+print("\n🔄 𝑩𝒐𝒕 𝒆𝒏 𝒆𝒋𝒆𝒄𝒖𝒄𝒊ó𝒏...")
+
+# Iniciar el bot
+app.run()
